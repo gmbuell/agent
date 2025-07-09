@@ -85,18 +85,18 @@ type APIRequest struct {
 }
 
 type APIResponse struct {
-	ID      string    `json:"id"`
-	Object  string    `json:"object"`
-	Created int64     `json:"created"`
-	Model   string    `json:"model"`
-	Choices []Choice  `json:"choices"`
-	Usage   Usage     `json:"usage"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model"`
+	Choices []Choice `json:"choices"`
+	Usage   Usage    `json:"usage"`
 }
 
 type Choice struct {
-	Index        int            `json:"index"`
-	Message      ChoiceMessage  `json:"message"`
-	FinishReason string         `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      ChoiceMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type ChoiceMessage struct {
@@ -777,15 +777,16 @@ func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, tim
 
 func convertMessagesToChat(messages []Message, systemPrompt string) []ChatMessage {
 	var chatMessages []ChatMessage
-	
-	// Add system prompt as first message if not already present
-	if len(messages) == 0 || messages[0].Role != "system" {
-		chatMessages = append(chatMessages, ChatMessage{
-			Role:    "system",
-			Content: systemPrompt,
-		})
-	}
-	
+
+	// Always add system prompt as first message
+	chatMessages = append(chatMessages, ChatMessage{
+		Role:    "system",
+		Content: systemPrompt,
+	})
+
+	fmt.Printf("🔧 Converting %d internal messages to chat format\n", len(messages))
+	fmt.Printf("🔧 System prompt: %.100s...\n", systemPrompt)
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
@@ -806,11 +807,11 @@ func convertMessagesToChat(messages []Message, systemPrompt string) []ChatMessag
 			}
 		case "assistant":
 			chatMsg := ChatMessage{Role: "assistant"}
-			
+
 			if blocks, ok := msg.Content.([]ContentBlock); ok {
 				var textParts []string
 				var toolCalls []ToolCall
-				
+
 				for _, block := range blocks {
 					if block.Type == "text" {
 						textParts = append(textParts, block.Text)
@@ -826,7 +827,7 @@ func convertMessagesToChat(messages []Message, systemPrompt string) []ChatMessag
 						})
 					}
 				}
-				
+
 				if len(textParts) > 0 {
 					chatMsg.Content = strings.Join(textParts, "\n")
 				}
@@ -834,17 +835,18 @@ func convertMessagesToChat(messages []Message, systemPrompt string) []ChatMessag
 					chatMsg.ToolCalls = toolCalls
 				}
 			}
-			
+
 			chatMessages = append(chatMessages, chatMsg)
 		}
 	}
-	
+
+	fmt.Printf("🔧 Generated %d chat messages for API\n", len(chatMessages))
 	return chatMessages
 }
 
 func convertChoiceToContentBlocks(choice Choice) []ContentBlock {
 	var blocks []ContentBlock
-	
+
 	// Add text content if present
 	if choice.Message.Content != "" {
 		blocks = append(blocks, ContentBlock{
@@ -852,13 +854,13 @@ func convertChoiceToContentBlocks(choice Choice) []ContentBlock {
 			Text: choice.Message.Content,
 		})
 	}
-	
+
 	// Convert tool calls to ContentBlocks
 	for _, toolCall := range choice.Message.ToolCalls {
 		// Parse the arguments JSON
 		var args map[string]interface{}
 		json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
-		
+
 		blocks = append(blocks, ContentBlock{
 			Type:  "tool_use",
 			ID:    toolCall.ID,
@@ -866,7 +868,7 @@ func convertChoiceToContentBlocks(choice Choice) []ContentBlock {
 			Input: args,
 		})
 	}
-	
+
 	return blocks
 }
 
@@ -876,11 +878,29 @@ func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Debug: Print request details
+	fmt.Printf("🚀 API Request Details:\n")
+	fmt.Printf("🚀 Model: %s\n", request.Model)
+	fmt.Printf("🚀 Messages count: %d\n", len(request.Messages))
+	fmt.Printf("🚀 Tools count: %d\n", len(request.Tools))
+	if len(request.Messages) > 0 {
+		fmt.Printf("🚀 First message role: %s\n", request.Messages[0].Role)
+		if request.Messages[0].Role == "system" {
+			fmt.Printf("🚀 System message: %.100s...\n", request.Messages[0].Content)
+		}
+	}
+
+	// Optional: Print full request JSON for debugging
+	if os.Getenv("DEBUG_API") == "true" {
+		fmt.Printf("🔍 Full API Request JSON:\n%s\n", string(jsonData))
+	}
+
 	// Get API endpoint from environment variable, with default fallback
 	apiURL := os.Getenv("OPENAI_API_URL")
 	if apiURL == "" {
 		apiURL = "https://api.openai.com/v1/chat/completions"
 	}
+	fmt.Printf("🚀 API URL: %s\n", apiURL)
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -907,13 +927,34 @@ func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// Debug: Print response details
+	fmt.Printf("📥 API Response Status: %d\n", resp.StatusCode)
+
 	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("❌ API Error Response: %s\n", string(body))
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Optional: Print full response JSON for debugging
+	if os.Getenv("DEBUG_API") == "true" {
+		fmt.Printf("🔍 Full API Response JSON:\n%s\n", string(body))
 	}
 
 	var response APIResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Debug: Print parsed response details
+	fmt.Printf("📥 Response parsed successfully\n")
+	fmt.Printf("📥 Choices count: %d\n", len(response.Choices))
+	if len(response.Choices) > 0 {
+		choice := response.Choices[0]
+		fmt.Printf("📥 First choice role: %s\n", choice.Message.Role)
+		if choice.Message.Content != "" {
+			fmt.Printf("📥 Content length: %d chars\n", len(choice.Message.Content))
+		}
+		fmt.Printf("📥 Tool calls count: %d\n", len(choice.Message.ToolCalls))
 	}
 
 	return &response, nil
@@ -954,145 +995,145 @@ func runAgentLoop(initialPrompt string) error {
 	})
 
 	ripgrepSchema := createToolSchema("ripgrep", "Search for patterns in files using ripgrep (rg)", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"pattern": {
-					Type:        "string",
-					Description: "The regular expression pattern to search for",
-				},
-				"path": {
-					Type:        "string",
-					Description: "Optional path to search in (defaults to current directory)",
-				},
-				"ignoreCase": {
-					Type:        "boolean",
-					Description: "Perform case-insensitive search (default: false)",
-				},
-				"lineNumbers": {
-					Type:        "boolean",
-					Description: "Show line numbers in output (default: false)",
-				},
-				"filesWithMatches": {
-					Type:        "boolean",
-					Description: "Only show file paths with matches (default: false)",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"pattern": {
+				Type:        "string",
+				Description: "The regular expression pattern to search for",
 			},
-			Required: []string{"pattern"},
+			"path": {
+				Type:        "string",
+				Description: "Optional path to search in (defaults to current directory)",
+			},
+			"ignoreCase": {
+				Type:        "boolean",
+				Description: "Perform case-insensitive search (default: false)",
+			},
+			"lineNumbers": {
+				Type:        "boolean",
+				Description: "Show line numbers in output (default: false)",
+			},
+			"filesWithMatches": {
+				Type:        "boolean",
+				Description: "Only show file paths with matches (default: false)",
+			},
+		},
+		Required: []string{"pattern"},
 	})
 
 	sedSchema := createToolSchema("sed", "Search and replace text in files using sed. ENFORCED: You must ALWAYS do a dry-run (dryRun=true) first to show diff before applying changes (dryRun=false). The system will reject apply operations without a prior dry-run.", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"filePath": {
-					Type:        "string",
-					Description: "Path to the file to modify",
-				},
-				"searchPattern": {
-					Type:        "string",
-					Description: "Pattern to search for (regex supported)",
-				},
-				"replacePattern": {
-					Type:        "string",
-					Description: "Text to replace with",
-				},
-				"dryRun": {
-					Type:        "boolean",
-					Description: "REQUIRED: Must be true first for preview, then false to apply. System enforces dry-run before apply.",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"filePath": {
+				Type:        "string",
+				Description: "Path to the file to modify",
 			},
-			Required: []string{"filePath", "searchPattern", "replacePattern", "dryRun"},
+			"searchPattern": {
+				Type:        "string",
+				Description: "Pattern to search for (regex supported)",
+			},
+			"replacePattern": {
+				Type:        "string",
+				Description: "Text to replace with",
+			},
+			"dryRun": {
+				Type:        "boolean",
+				Description: "REQUIRED: Must be true first for preview, then false to apply. System enforces dry-run before apply.",
+			},
+		},
+		Required: []string{"filePath", "searchPattern", "replacePattern", "dryRun"},
 	})
 
 	todoSchema := createToolSchema("todo", "Manage todo.md files for planning and tracking multi-step changes", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"action": {
-					Type:        "string",
-					Description: "Action to perform: 'read', 'write', 'add', 'complete', or 'update'",
-				},
-				"filePath": {
-					Type:        "string",
-					Description: "Path to the todo.md file (default: todo.md)",
-				},
-				"content": {
-					Type:        "string",
-					Description: "Content for the action (item text, full content, or 'old -> new' for update)",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"action": {
+				Type:        "string",
+				Description: "Action to perform: 'read', 'write', 'add', 'complete', or 'update'",
 			},
-			Required: []string{"action"},
+			"filePath": {
+				Type:        "string",
+				Description: "Path to the todo.md file (default: todo.md)",
+			},
+			"content": {
+				Type:        "string",
+				Description: "Content for the action (item text, full content, or 'old -> new' for update)",
+			},
+		},
+		Required: []string{"action"},
 	})
 
 	combySchema := createToolSchema("comby", "Advanced structural search and replace tool for code. Comby uses template-based matching with holes (:[name]) to match code structurally, understanding balanced delimiters, comments, and strings. Examples: 'fmt.Println(:[args])' matches function calls, 'if (:[condition]) { :[body] }' matches if statements. Supports regex in holes with :[name~regex] syntax. Can match-only or rewrite code in-place with diff preview.", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"matchTemplate": {
-					Type:        "string",
-					Description: "Template to match code structure using holes like :[name]. Example: 'fmt.Println(:[args])' or 'if (:[condition]) { :[body] }'",
-				},
-				"rewriteTemplate": {
-					Type:        "string",
-					Description: "Template to rewrite matched code. Use same hole names as match template. Example: 'log.Printf(\"msg: %s\", :[args])'",
-				},
-				"target": {
-					Type:        "string",
-					Description: "Target files/directories/extensions to search. Examples: '.go', 'src/', 'main.go', '.js,.ts'",
-				},
-				"matchOnly": {
-					Type:        "boolean",
-					Description: "Only find matches without rewriting (default: false)",
-				},
-				"inPlace": {
-					Type:        "boolean",
-					Description: "Rewrite files in place (default: false)",
-				},
-				"diff": {
-					Type:        "boolean",
-					Description: "Show diff of changes (default: false)",
-				},
-				"language": {
-					Type:        "string",
-					Description: "Force language/matcher: .go, .js, .py, .java, .c, .generic, etc.",
-				},
-				"rule": {
-					Type:        "string",
-					Description: "Apply rules to matches (advanced). Example: 'where match.var == \"foo\"'",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"matchTemplate": {
+				Type:        "string",
+				Description: "Template to match code structure using holes like :[name]. Example: 'fmt.Println(:[args])' or 'if (:[condition]) { :[body] }'",
 			},
-			Required: []string{"matchTemplate"},
+			"rewriteTemplate": {
+				Type:        "string",
+				Description: "Template to rewrite matched code. Use same hole names as match template. Example: 'log.Printf(\"msg: %s\", :[args])'",
+			},
+			"target": {
+				Type:        "string",
+				Description: "Target files/directories/extensions to search. Examples: '.go', 'src/', 'main.go', '.js,.ts'",
+			},
+			"matchOnly": {
+				Type:        "boolean",
+				Description: "Only find matches without rewriting (default: false)",
+			},
+			"inPlace": {
+				Type:        "boolean",
+				Description: "Rewrite files in place (default: false)",
+			},
+			"diff": {
+				Type:        "boolean",
+				Description: "Show diff of changes (default: false)",
+			},
+			"language": {
+				Type:        "string",
+				Description: "Force language/matcher: .go, .js, .py, .java, .c, .generic, etc.",
+			},
+			"rule": {
+				Type:        "string",
+				Description: "Apply rules to matches (advanced). Example: 'where match.var == \"foo\"'",
+			},
+		},
+		Required: []string{"matchTemplate"},
 	})
 
 	gofmtSchema := createToolSchema("gofmt", "Format Go source code using 'go fmt'. IMPORTANT: Agent should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format files in-place.", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"target": {
-					Type:        "string",
-					Description: "Target to format: file path, directory, or pattern (default: './...' for all Go files)",
-				},
-				"listFiles": {
-					Type:        "boolean",
-					Description: "List files that would be formatted without formatting them (default: false)",
-				},
-				"diff": {
-					Type:        "boolean",
-					Description: "Show diff of formatting changes without applying them (default: false)",
-				},
-				"write": {
-					Type:        "boolean",
-					Description: "Write formatted code back to files in-place (default: false)",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"target": {
+				Type:        "string",
+				Description: "Target to format: file path, directory, or pattern (default: './...' for all Go files)",
 			},
-			Required: []string{},
+			"listFiles": {
+				Type:        "boolean",
+				Description: "List files that would be formatted without formatting them (default: false)",
+			},
+			"diff": {
+				Type:        "boolean",
+				Description: "Show diff of formatting changes without applying them (default: false)",
+			},
+			"write": {
+				Type:        "boolean",
+				Description: "Write formatted code back to files in-place (default: false)",
+			},
+		},
+		Required: []string{},
 	})
 
 	askSchema := createToolSchema("ask", "Ask the user for clarification or additional information when the agent needs input to proceed. Use this when requirements are unclear, multiple options exist, or user preferences are needed.", InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"question": {
-					Type:        "string",
-					Description: "The question or clarification request to present to the user. Be specific and clear about what information you need.",
-				},
+		Type: "object",
+		Properties: map[string]Property{
+			"question": {
+				Type:        "string",
+				Description: "The question or clarification request to present to the user. Be specific and clear about what information you need.",
 			},
-			Required: []string{"question"},
+		},
+		Required: []string{"question"},
 	})
 
 	finishedSchema := createToolSchema("finished", "Call this tool when the task is complete to end the conversation", InputSchema{
@@ -1157,7 +1198,7 @@ func runAgentLoop(initialPrompt string) error {
 		if len(response.Choices) > 0 {
 			contentBlocks = convertChoiceToContentBlocks(response.Choices[0])
 		}
-		
+
 		messages = append(messages, Message{
 			Role:    "assistant",
 			Content: contentBlocks,
