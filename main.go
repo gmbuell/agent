@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,6 +76,9 @@ type ShellResult struct {
 	Stderr   string `json:"stderr"`
 	ExitCode int    `json:"exitCode"`
 }
+
+// Global state to track sed dry-run operations
+var sedDryRunCache = make(map[string]bool)
 
 func executeShellCommand(command string, timeout time.Duration) ShellResult {
 	fmt.Printf("\n🔧 Executing shell command: %s\n", command)
@@ -193,6 +197,77 @@ func executeRipgrep(pattern, path string, ignoreCase, lineNumbers, filesWithMatc
 	return result
 }
 
+func generateSedOperationKey(filePath, searchPattern, replacePattern string) string {
+	data := fmt.Sprintf("%s|%s|%s", filePath, searchPattern, replacePattern)
+	hash := sha256.Sum256([]byte(data))
+	return fmt.Sprintf("%x", hash)
+}
+
+func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, timeout time.Duration) ShellResult {
+	operationKey := generateSedOperationKey(filePath, searchPattern, replacePattern)
+	
+	if dryRun {
+		fmt.Printf("\n🔍 Sed dry-run on %s: s/%s/%s/g\n", filePath, searchPattern, replacePattern)
+	} else {
+		// Check if dry-run was performed for this exact operation
+		if !sedDryRunCache[operationKey] {
+			return ShellResult{
+				Stdout:   "",
+				Stderr:   "ERROR: Must perform dry-run before applying sed changes. Please run the same sed command with dryRun=true first.",
+				ExitCode: 1,
+			}
+		}
+		fmt.Printf("\n✏️ Sed applying changes to %s: s/%s/%s/g\n", filePath, searchPattern, replacePattern)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if dryRun {
+		// Create a temporary file for the modified content and show diff
+		tempFile := filePath + ".tmp"
+		sedCmd := fmt.Sprintf("sed 's/%s/%s/g' '%s' > '%s' && diff -u '%s' '%s'; rm -f '%s'", 
+			searchPattern, replacePattern, filePath, tempFile, filePath, tempFile, tempFile)
+		cmd = exec.CommandContext(ctx, "sh", "-c", sedCmd)
+	} else {
+		// Apply changes in-place
+		cmd = exec.CommandContext(ctx, "sed", "-i", fmt.Sprintf("s/%s/%s/g", searchPattern, replacePattern), filePath)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	result := ShellResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\n⏱️ Sed command timed out after %v\n", timeout)
+		}
+		result.ExitCode = 1
+		if result.Stderr == "" {
+			result.Stderr = err.Error()
+		}
+	}
+
+	// If dry-run was successful, mark it as completed
+	if dryRun && result.ExitCode == 0 {
+		sedDryRunCache[operationKey] = true
+	} else if !dryRun && result.ExitCode == 0 {
+		// Clear the dry-run cache entry after successful application
+		delete(sedDryRunCache, operationKey)
+	}
+
+	return result
+}
+
 func callAnthropicAPI(request APIRequest) (*APIResponse, error) {
 	jsonData, err := json.Marshal(request)
 	if err != nil {
@@ -299,6 +374,33 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
+	sedSchema := ToolSchema{
+		Name:        "sed",
+		Description: "Search and replace text in files using sed. ENFORCED: You must ALWAYS do a dry-run (dryRun=true) first to show diff before applying changes (dryRun=false). The system will reject apply operations without a prior dry-run.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"filePath": {
+					Type:        "string",
+					Description: "Path to the file to modify",
+				},
+				"searchPattern": {
+					Type:        "string",
+					Description: "Pattern to search for (regex supported)",
+				},
+				"replacePattern": {
+					Type:        "string",
+					Description: "Text to replace with",
+				},
+				"dryRun": {
+					Type:        "boolean",
+					Description: "REQUIRED: Must be true first for preview, then false to apply. System enforces dry-run before apply.",
+				},
+			},
+			Required: []string{"filePath", "searchPattern", "replacePattern", "dryRun"},
+		},
+	}
+
 	finishedSchema := ToolSchema{
 		Name:        "finished",
 		Description: "Call this tool when the task is complete to end the conversation",
@@ -309,13 +411,14 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
-	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, finishedSchema}
+	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, finishedSchema}
 
-	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, and search files to accomplish tasks.\n" +
+	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, and edit text files to accomplish tasks.\n" +
 		"Use the provided tools to complete the user's task:\n" +
 		"- shellCommand: Execute any shell command\n" +
 		"- goDoc: Get documentation for Go packages, types, or functions\n" +
 		"- ripgrep: Search for patterns in files using ripgrep (fast file search)\n" +
+		"- sed: Search and replace text in files. MANDATORY: You MUST do dry-run (dryRun=true) first, then apply (dryRun=false). System enforces this workflow.\n" +
 		"When the task is complete, call the finished tool to indicate completion."
 
 	messages := []Message{
@@ -410,6 +513,28 @@ func runAgentLoop(initialPrompt string) error {
 								},
 							},
 						})
+					}
+				case "sed":
+					if filePath, ok := block.Input["filePath"].(string); ok {
+						if searchPattern, ok := block.Input["searchPattern"].(string); ok {
+							if replacePattern, ok := block.Input["replacePattern"].(string); ok {
+								dryRun, _ := block.Input["dryRun"].(bool)
+								
+								result := executeSed(filePath, searchPattern, replacePattern, dryRun, 10*time.Second)
+								resultJSON, _ := json.Marshal(result)
+
+								messages = append(messages, Message{
+									Role: "user",
+									Content: []ToolResult{
+										{
+											Type:      "tool_result",
+											ToolUseID: block.ID,
+											Content:   string(resultJSON),
+										},
+									},
+								})
+							}
+						}
 					}
 				case "finished":
 					fmt.Println("\n✅ Task completed!")
