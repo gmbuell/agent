@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	defaultModel    = "claude-3-7-sonnet"
-	maxTokens       = 200000
-	maxInputTokens  = 150000
-	temperature     = 0.1
+	defaultModel   = "claude-3-7-sonnet"
+	maxTokens      = 200000
+	maxInputTokens = 150000
+	temperature    = 0.1
 )
 
 type ToolSchema struct {
@@ -81,7 +81,63 @@ type ShellResult struct {
 // Global state to track sed dry-run operations
 var sedDryRunCache = make(map[string]bool)
 
+// Global state for command execution - tracks which binaries are always allowed
+var alwaysAllowedCommands = make(map[string]bool)
+
+func promptForCommandExecution(command string) bool {
+	// Skip prompting during tests (when TEST_MODE environment variable is set)
+	if os.Getenv("TEST_MODE") == "true" {
+		return true
+	}
+
+	// Extract the binary name from the command
+	binary := strings.Fields(command)[0]
+	if len(strings.Fields(command)) == 0 {
+		return false
+	}
+
+	// Check if this binary is always allowed
+	if alwaysAllowedCommands[binary] {
+		return true
+	}
+
+	fmt.Printf("\n⚠️  About to execute shell command: %s\n", command)
+	fmt.Printf("Options: (y)es, (n)o, (i)nstruct, (a)lways allow '%s': ", binary)
+
+	var response string
+	fmt.Scanln(&response)
+
+	switch strings.ToLower(response) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	case "i", "instruct":
+		fmt.Print("Enter your instruction: ")
+		var instruction string
+		fmt.Scanln(&instruction)
+		fmt.Printf("Instruction received: %s\n", instruction)
+		return false // Don't execute, user provided instruction instead
+	case "a", "always":
+		alwaysAllowedCommands[binary] = true
+		fmt.Printf("'%s' will always be allowed from now on.\n", binary)
+		return true
+	default:
+		fmt.Println("Invalid response, defaulting to 'no'")
+		return false
+	}
+}
+
 func executeShellCommand(command string, timeout time.Duration) ShellResult {
+	// Prompt user for confirmation before executing
+	if !promptForCommandExecution(command) {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   "Command execution cancelled by user",
+			ExitCode: 1,
+		}
+	}
+
 	fmt.Printf("\n🔧 Executing shell command: %s\n", command)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

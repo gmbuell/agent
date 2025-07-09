@@ -13,6 +13,16 @@ func resetSedCache() {
 	sedDryRunCache = make(map[string]bool)
 }
 
+// Test helper to enable test mode
+func enableTestMode() {
+	os.Setenv("TEST_MODE", "true")
+}
+
+// Test helper to disable test mode
+func disableTestMode() {
+	os.Unsetenv("TEST_MODE")
+}
+
 func TestExecuteShellCommand(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1177,6 +1187,7 @@ func TestAskIntegration(t *testing.T) {
 func TestMain(m *testing.M) {
 	// Setup
 	fmt.Println("Setting up test environment...")
+	os.Setenv("TEST_MODE", "true")
 	os.MkdirAll("test_data", 0755)
 
 	// Run tests
