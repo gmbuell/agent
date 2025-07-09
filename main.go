@@ -109,6 +109,39 @@ func executeShellCommand(command string, timeout time.Duration) ShellResult {
 	return result
 }
 
+func executeGoDoc(packageOrSymbol string, timeout time.Duration) ShellResult {
+	fmt.Printf("\n📚 Executing go doc: %s\n", packageOrSymbol)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "doc", packageOrSymbol)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	result := ShellResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\n⏱️ Go doc command timed out after %v\n", timeout)
+		}
+		result.ExitCode = 1
+		if result.Stderr == "" {
+			result.Stderr = err.Error()
+		}
+	}
+
+	return result
+}
+
 func callAnthropicAPI(request APIRequest) (*APIResponse, error) {
 	jsonData, err := json.Marshal(request)
 	if err != nil {
@@ -169,6 +202,21 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
+	goDocSchema := ToolSchema{
+		Name:        "goDoc",
+		Description: "Execute go doc command to get documentation for Go packages, types, or functions",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"packageOrSymbol": {
+					Type:        "string",
+					Description: "The package, type, or function to get documentation for (e.g., 'fmt', 'fmt.Println', 'net/http')",
+				},
+			},
+			Required: []string{"packageOrSymbol"},
+		},
+	}
+
 	finishedSchema := ToolSchema{
 		Name:        "finished",
 		Description: "Call this tool when the task is complete to end the conversation",
@@ -179,10 +227,12 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
-	tools := []ToolSchema{shellCommandSchema, finishedSchema}
+	tools := []ToolSchema{shellCommandSchema, goDocSchema, finishedSchema}
 
-	systemPrompt := "You are an AI agent that can run shell commands to accomplish tasks.\n" +
-		"Use the provided tools to complete the user's task.\n" +
+	systemPrompt := "You are an AI agent that can run shell commands and access Go documentation to accomplish tasks.\n" +
+		"Use the provided tools to complete the user's task:\n" +
+		"- shellCommand: Execute any shell command\n" +
+		"- goDoc: Get documentation for Go packages, types, or functions\n" +
 		"When the task is complete, call the finished tool to indicate completion."
 
 	messages := []Message{
@@ -228,6 +278,22 @@ func runAgentLoop(initialPrompt string) error {
 				case "shellCommand":
 					if cmd, ok := block.Input["command"].(string); ok {
 						result := executeShellCommand(cmd, 10*time.Second)
+						resultJSON, _ := json.Marshal(result)
+
+						messages = append(messages, Message{
+							Role: "user",
+							Content: []ToolResult{
+								{
+									Type:      "tool_result",
+									ToolUseID: block.ID,
+									Content:   string(resultJSON),
+								},
+							},
+						})
+					}
+				case "goDoc":
+					if packageOrSymbol, ok := block.Input["packageOrSymbol"].(string); ok {
+						result := executeGoDoc(packageOrSymbol, 10*time.Second)
 						resultJSON, _ := json.Marshal(result)
 
 						messages = append(messages, Message{
