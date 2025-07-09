@@ -504,6 +504,200 @@ func TestIntegration(t *testing.T) {
 	})
 }
 
+func TestExecuteTodo(t *testing.T) {
+	testTodoFile := "test_data/test_todo.md"
+	
+	// Cleanup before and after tests
+	defer os.Remove(testTodoFile)
+	os.Remove(testTodoFile)
+	
+	t.Run("read nonexistent todo file", func(t *testing.T) {
+		result := executeTodo("read", testTodoFile, "", 10*time.Second)
+		if result.ExitCode != 1 {
+			t.Errorf("Expected failure reading nonexistent file, got exitCode = %v", result.ExitCode)
+		}
+		if !strings.Contains(result.Stderr, "does not exist") {
+			t.Errorf("Expected error about nonexistent file, got: %s", result.Stderr)
+		}
+	})
+	
+	t.Run("write todo file", func(t *testing.T) {
+		content := "# My Todo List\n\n- [ ] Task 1\n- [ ] Task 2\n"
+		result := executeTodo("write", testTodoFile, content, 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Write failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		
+		// Verify file was created
+		if _, err := os.Stat(testTodoFile); os.IsNotExist(err) {
+			t.Errorf("Todo file was not created")
+		}
+	})
+	
+	t.Run("read existing todo file", func(t *testing.T) {
+		result := executeTodo("read", testTodoFile, "", 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Read failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		if !strings.Contains(result.Stdout, "My Todo List") {
+			t.Errorf("Expected todo content, got: %s", result.Stdout)
+		}
+	})
+	
+	t.Run("add todo item", func(t *testing.T) {
+		result := executeTodo("add", testTodoFile, "Task 3", 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Add failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		
+		// Verify item was added
+		content, _ := os.ReadFile(testTodoFile)
+		if !strings.Contains(string(content), "- [ ] Task 3") {
+			t.Errorf("Task 3 was not added to todo file")
+		}
+	})
+	
+	t.Run("complete todo item", func(t *testing.T) {
+		result := executeTodo("complete", testTodoFile, "Task 1", 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Complete failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		
+		// Verify item was completed
+		content, _ := os.ReadFile(testTodoFile)
+		if !strings.Contains(string(content), "- [x] Task 1") {
+			t.Errorf("Task 1 was not marked as complete")
+		}
+	})
+	
+	t.Run("update todo item", func(t *testing.T) {
+		result := executeTodo("update", testTodoFile, "Task 2 -> Updated Task 2", 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Update failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		
+		// Verify item was updated
+		content, _ := os.ReadFile(testTodoFile)
+		if !strings.Contains(string(content), "- [ ] Updated Task 2") {
+			t.Errorf("Task 2 was not updated correctly")
+		}
+		if strings.Contains(string(content), "- [ ] Task 2") && !strings.Contains(string(content), "Updated Task 2") {
+			t.Errorf("Old Task 2 still exists")
+		}
+	})
+	
+	t.Run("complete nonexistent item", func(t *testing.T) {
+		result := executeTodo("complete", testTodoFile, "Nonexistent Task", 10*time.Second)
+		if result.ExitCode != 1 {
+			t.Errorf("Expected failure completing nonexistent item, got exitCode = %v", result.ExitCode)
+		}
+		if !strings.Contains(result.Stderr, "not found") {
+			t.Errorf("Expected error about item not found, got: %s", result.Stderr)
+		}
+	})
+	
+	t.Run("update with invalid format", func(t *testing.T) {
+		result := executeTodo("update", testTodoFile, "invalid format", 10*time.Second)
+		if result.ExitCode != 1 {
+			t.Errorf("Expected failure with invalid format, got exitCode = %v", result.ExitCode)
+		}
+		if !strings.Contains(result.Stderr, "Update format") {
+			t.Errorf("Expected error about update format, got: %s", result.Stderr)
+		}
+	})
+	
+	t.Run("unknown action", func(t *testing.T) {
+		result := executeTodo("unknown", testTodoFile, "", 10*time.Second)
+		if result.ExitCode != 1 {
+			t.Errorf("Expected failure with unknown action, got exitCode = %v", result.ExitCode)
+		}
+		if !strings.Contains(result.Stderr, "Unknown todo action") {
+			t.Errorf("Expected error about unknown action, got: %s", result.Stderr)
+		}
+	})
+}
+
+func TestTodoAddToEmptyFile(t *testing.T) {
+	testTodoFile := "test_data/empty_todo.md"
+	defer os.Remove(testTodoFile)
+	os.Remove(testTodoFile)
+	
+	t.Run("add to empty file creates header", func(t *testing.T) {
+		result := executeTodo("add", testTodoFile, "First Task", 10*time.Second)
+		if result.ExitCode != 0 {
+			t.Errorf("Add to empty file failed: exitCode = %v, stderr = %s", result.ExitCode, result.Stderr)
+		}
+		
+		// Verify file was created with header
+		content, _ := os.ReadFile(testTodoFile)
+		contentStr := string(content)
+		if !strings.Contains(contentStr, "# Todo List") {
+			t.Errorf("Header was not added to empty file")
+		}
+		if !strings.Contains(contentStr, "- [ ] First Task") {
+			t.Errorf("First task was not added correctly")
+		}
+	})
+}
+
+func TestTodoIntegration(t *testing.T) {
+	testTodoFile := "test_data/integration_todo.md"
+	defer os.Remove(testTodoFile)
+	os.Remove(testTodoFile)
+	
+	t.Run("full todo workflow", func(t *testing.T) {
+		// Start with empty file, add items
+		result1 := executeTodo("add", testTodoFile, "Setup environment", 10*time.Second)
+		if result1.ExitCode != 0 {
+			t.Fatalf("Add 1 failed: %v", result1.Stderr)
+		}
+		
+		result2 := executeTodo("add", testTodoFile, "Write code", 10*time.Second)
+		if result2.ExitCode != 0 {
+			t.Fatalf("Add 2 failed: %v", result2.Stderr)
+		}
+		
+		result3 := executeTodo("add", testTodoFile, "Test code", 10*time.Second)
+		if result3.ExitCode != 0 {
+			t.Fatalf("Add 3 failed: %v", result3.Stderr)
+		}
+		
+		// Complete first item
+		result4 := executeTodo("complete", testTodoFile, "Setup environment", 10*time.Second)
+		if result4.ExitCode != 0 {
+			t.Fatalf("Complete failed: %v", result4.Stderr)
+		}
+		
+		// Update second item
+		result5 := executeTodo("update", testTodoFile, "Write code -> Write and document code", 10*time.Second)
+		if result5.ExitCode != 0 {
+			t.Fatalf("Update failed: %v", result5.Stderr)
+		}
+		
+		// Read final content
+		result6 := executeTodo("read", testTodoFile, "", 10*time.Second)
+		if result6.ExitCode != 0 {
+			t.Fatalf("Read failed: %v", result6.Stderr)
+		}
+		
+		finalContent := result6.Stdout
+		
+		// Verify final state
+		if !strings.Contains(finalContent, "- [x] Setup environment") {
+			t.Errorf("Setup environment should be completed")
+		}
+		if !strings.Contains(finalContent, "- [ ] Write and document code") {
+			t.Errorf("Write code should be updated")
+		}
+		if !strings.Contains(finalContent, "- [ ] Test code") {
+			t.Errorf("Test code should be pending")
+		}
+		if strings.Contains(finalContent, "- [ ] Write code") && !strings.Contains(finalContent, "Write and document code") {
+			t.Errorf("Old 'Write code' item should not exist")
+		}
+	})
+}
+
 func TestMain(m *testing.M) {
 	// Setup
 	fmt.Println("Setting up test environment...")

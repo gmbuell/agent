@@ -203,6 +203,229 @@ func generateSedOperationKey(filePath, searchPattern, replacePattern string) str
 	return fmt.Sprintf("%x", hash)
 }
 
+func executeTodo(action, filePath, content string, timeout time.Duration) ShellResult {
+	switch action {
+	case "read":
+		return readTodoFile(filePath)
+	case "write":
+		return writeTodoFile(filePath, content)
+	case "add":
+		return addTodoItem(filePath, content)
+	case "complete":
+		return completeTodoItem(filePath, content)
+	case "update":
+		return updateTodoItem(filePath, content)
+	default:
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Unknown todo action: %s", action),
+			ExitCode: 1,
+		}
+	}
+}
+
+func readTodoFile(filePath string) ShellResult {
+	fmt.Printf("\n📝 Reading todo file: %s\n", filePath)
+	
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ShellResult{
+				Stdout:   "",
+				Stderr:   fmt.Sprintf("Todo file does not exist: %s", filePath),
+				ExitCode: 1,
+			}
+		}
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error reading file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	return ShellResult{
+		Stdout:   string(content),
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
+func writeTodoFile(filePath, content string) ShellResult {
+	fmt.Printf("\n✏️ Writing todo file: %s\n", filePath)
+	
+	err := os.WriteFile(filePath, []byte(content), 0644)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error writing file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	return ShellResult{
+		Stdout:   "Todo file written successfully",
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
+func addTodoItem(filePath, item string) ShellResult {
+	fmt.Printf("\n➕ Adding todo item to: %s\n", filePath)
+	
+	// Read existing content or create new file
+	var existingContent string
+	if content, err := os.ReadFile(filePath); err == nil {
+		existingContent = string(content)
+	} else if !os.IsNotExist(err) {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error reading file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	// Add header if file is empty
+	if strings.TrimSpace(existingContent) == "" {
+		existingContent = "# Todo List\n\n"
+	}
+	
+	// Add new item
+	newContent := existingContent
+	if !strings.HasSuffix(existingContent, "\n") {
+		newContent += "\n"
+	}
+	newContent += fmt.Sprintf("- [ ] %s\n", item)
+	
+	err := os.WriteFile(filePath, []byte(newContent), 0644)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error writing file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	return ShellResult{
+		Stdout:   "Todo item added successfully",
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
+func completeTodoItem(filePath, item string) ShellResult {
+	fmt.Printf("\n✅ Completing todo item in: %s\n", filePath)
+	
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error reading file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	// Find and mark item as complete
+	lines := strings.Split(string(content), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.Contains(line, item) && strings.Contains(line, "- [ ]") {
+			lines[i] = strings.Replace(line, "- [ ]", "- [x]", 1)
+			found = true
+			break
+		}
+	}
+	
+	if !found {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Todo item not found: %s", item),
+			ExitCode: 1,
+		}
+	}
+	
+	newContent := strings.Join(lines, "\n")
+	err = os.WriteFile(filePath, []byte(newContent), 0644)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error writing file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	return ShellResult{
+		Stdout:   "Todo item completed successfully",
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
+func updateTodoItem(filePath, update string) ShellResult {
+	fmt.Printf("\n🔄 Updating todo item in: %s\n", filePath)
+	
+	// Parse update format: "old_item -> new_item"
+	parts := strings.Split(update, " -> ")
+	if len(parts) != 2 {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   "Update format should be: 'old_item -> new_item'",
+			ExitCode: 1,
+		}
+	}
+	
+	oldItem := strings.TrimSpace(parts[0])
+	newItem := strings.TrimSpace(parts[1])
+	
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error reading file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	// Find and update item
+	lines := strings.Split(string(content), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.Contains(line, oldItem) && (strings.Contains(line, "- [ ]") || strings.Contains(line, "- [x]")) {
+			// Preserve the checkbox state
+		if strings.Contains(line, "- [ ]") {
+				lines[i] = fmt.Sprintf("- [ ] %s", newItem)
+			} else {
+				lines[i] = fmt.Sprintf("- [x] %s", newItem)
+			}
+			found = true
+			break
+		}
+	}
+	
+	if !found {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Todo item not found: %s", oldItem),
+			ExitCode: 1,
+		}
+	}
+	
+	newContent := strings.Join(lines, "\n")
+	err = os.WriteFile(filePath, []byte(newContent), 0644)
+	if err != nil {
+		return ShellResult{
+			Stdout:   "",
+			Stderr:   fmt.Sprintf("Error writing file: %v", err),
+			ExitCode: 1,
+		}
+	}
+	
+	return ShellResult{
+		Stdout:   "Todo item updated successfully",
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
 func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, timeout time.Duration) ShellResult {
 	operationKey := generateSedOperationKey(filePath, searchPattern, replacePattern)
 	
@@ -409,6 +632,29 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
+	todoSchema := ToolSchema{
+		Name:        "todo",
+		Description: "Manage todo.md files for planning and tracking multi-step changes",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"action": {
+					Type:        "string",
+					Description: "Action to perform: 'read', 'write', 'add', 'complete', or 'update'",
+				},
+				"filePath": {
+					Type:        "string",
+					Description: "Path to the todo.md file (default: todo.md)",
+				},
+				"content": {
+					Type:        "string",
+					Description: "Content for the action (item text, full content, or 'old -> new' for update)",
+				},
+			},
+			Required: []string{"action"},
+		},
+	}
+
 	finishedSchema := ToolSchema{
 		Name:        "finished",
 		Description: "Call this tool when the task is complete to end the conversation",
@@ -419,14 +665,15 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
-	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, finishedSchema}
+	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, finishedSchema}
 
-	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, and edit text files to accomplish tasks.\n" +
+	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, edit text files, and manage todo lists to accomplish tasks.\n" +
 		"Use the provided tools to complete the user's task:\n" +
 		"- shellCommand: Execute any shell command\n" +
 		"- goDoc: Get documentation for Go packages, types, or functions\n" +
 		"- ripgrep: Search for patterns in files using ripgrep (fast file search)\n" +
 		"- sed: Search and replace text in files. MANDATORY: You MUST do dry-run (dryRun=true) first, then apply (dryRun=false). System enforces this workflow.\n" +
+		"- todo: Manage todo.md files for planning multi-step changes (actions: read, write, add, complete, update)\n" +
 		"When the task is complete, call the finished tool to indicate completion."
 
 	messages := []Message{
@@ -543,6 +790,28 @@ func runAgentLoop(initialPrompt string) error {
 								})
 							}
 						}
+					}
+				case "todo":
+					if action, ok := block.Input["action"].(string); ok {
+						filePath, _ := block.Input["filePath"].(string)
+						if filePath == "" {
+							filePath = "todo.md"
+						}
+						content, _ := block.Input["content"].(string)
+						
+						result := executeTodo(action, filePath, content, 10*time.Second)
+						resultJSON, _ := json.Marshal(result)
+
+						messages = append(messages, Message{
+							Role: "user",
+							Content: []ToolResult{
+								{
+									Type:      "tool_result",
+									ToolUseID: block.ID,
+									Content:   string(resultJSON),
+								},
+							},
+						})
 					}
 				case "finished":
 					fmt.Println("\n✅ Task completed!")

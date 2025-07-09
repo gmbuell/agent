@@ -37,6 +37,7 @@ if [ $? -eq 0 ]; then
     echo "- goDoc: Access Go documentation"
     echo "- ripgrep: Fast file search with various options"
     echo "- sed: Safe file editing with mandatory dry-run"
+    echo "- todo: Manage todo.md files for planning and tracking"
     echo
     echo "🛡️ Security features verified:"
     echo "- Sed dry-run enforcement prevents accidental modifications"
