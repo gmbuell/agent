@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	anthropicAPIURL = "https://api.anthropic.com/v1/messages"
-	model           = "claude-3-opus-20240229"
-	maxTokens       = 4000
+	defaultModel    = "claude-3-7-sonnet"
+	maxTokens       = 200000
+	maxInputTokens  = 150000
 	temperature     = 0.1
 )
 
@@ -59,12 +59,13 @@ type ToolResult struct {
 }
 
 type APIRequest struct {
-	Model       string       `json:"model"`
-	MaxTokens   int          `json:"max_tokens"`
-	Messages    []Message    `json:"messages"`
-	System      string       `json:"system"`
-	Tools       []ToolSchema `json:"tools"`
-	Temperature float64      `json:"temperature"`
+	Model          string       `json:"model"`
+	MaxTokens      int          `json:"max_tokens"`
+	MaxInputTokens int          `json:"max_input_tokens"`
+	Messages       []Message    `json:"messages"`
+	System         string       `json:"system"`
+	Tools          []ToolSchema `json:"tools"`
+	Temperature    float64      `json:"temperature"`
 }
 
 type APIResponse struct {
@@ -674,7 +675,13 @@ func callAnthropicAPI(request APIRequest) (*APIResponse, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", anthropicAPIURL, bytes.NewBuffer(jsonData))
+	// Get API endpoint from environment variable, with default fallback
+	apiURL := os.Getenv("ANTHROPIC_API_URL")
+	if apiURL == "" {
+		apiURL = "https://api.anthropic.com/v1/messages"
+	}
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -943,13 +950,20 @@ func runAgentLoop(initialPrompt string) error {
 	for {
 		fmt.Println("\n🤔 Thinking...")
 
+		// Get model from environment variable, with default fallback
+		model := os.Getenv("ANTHROPIC_MODEL")
+		if model == "" {
+			model = defaultModel
+		}
+
 		request := APIRequest{
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Messages:    messages,
-			System:      systemPrompt,
-			Tools:       tools,
-			Temperature: temperature,
+			Model:          model,
+			MaxTokens:      maxTokens,
+			MaxInputTokens: maxInputTokens,
+			Messages:       messages,
+			System:         systemPrompt,
+			Tools:          tools,
+			Temperature:    temperature,
 		}
 
 		response, err := callAnthropicAPI(request)
