@@ -23,9 +23,14 @@ const (
 )
 
 type ToolSchema struct {
+	Type     string   `json:"type"`
+	Function Function `json:"function"`
+}
+
+type Function struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
-	InputSchema InputSchema `json:"input_schema"`
+	Parameters  InputSchema `json:"parameters"`
 }
 
 type InputSchema struct {
@@ -39,9 +44,20 @@ type Property struct {
 	Description string `json:"description"`
 }
 
+// Message represents a chat message - used for both API requests and internal storage
 type Message struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content,omitempty"`
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string      `json:"tool_call_id,omitempty"`
+}
+
+// ChatMessage represents the OpenAI API format for messages
+type ChatMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 type ContentBlock struct {
@@ -59,38 +75,51 @@ type ToolResult struct {
 }
 
 type APIRequest struct {
-	Model       string       `json:"model"`
-	Input       string       `json:"input"`
-	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
-	Temperature *float64     `json:"temperature,omitempty"`
-	TopP        *float64     `json:"top_p,omitempty"`
-	Tools       []ToolSchema `json:"tools,omitempty"`
-	ToolChoice  string       `json:"tool_choice,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []ChatMessage `json:"messages"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	TopP        *float64      `json:"top_p,omitempty"`
+	Tools       []ToolSchema  `json:"tools,omitempty"`
+	ToolChoice  string        `json:"tool_choice,omitempty"`
 }
 
 type APIResponse struct {
-	ID                string       `json:"id"`
-	Object            string       `json:"object"`
-	CreatedAt         int64        `json:"created_at"`
-	Status            string       `json:"status"`
-	Error             interface{}  `json:"error"`
-	Model             string       `json:"model"`
-	Output            []OutputMessage `json:"output"`
-	Usage             Usage        `json:"usage"`
+	ID      string    `json:"id"`
+	Object  string    `json:"object"`
+	Created int64     `json:"created"`
+	Model   string    `json:"model"`
+	Choices []Choice  `json:"choices"`
+	Usage   Usage     `json:"usage"`
 }
 
-type OutputMessage struct {
-	Type    string         `json:"type"`
-	ID      string         `json:"id"`
-	Status  string         `json:"status"`
-	Role    string         `json:"role"`
-	Content []ContentBlock `json:"content"`
+type Choice struct {
+	Index        int            `json:"index"`
+	Message      ChoiceMessage  `json:"message"`
+	FinishReason string         `json:"finish_reason"`
+}
+
+type ChoiceMessage struct {
+	Role      string     `json:"role"`
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type ShellResult struct {
@@ -746,44 +775,99 @@ func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, tim
 	return result
 }
 
-func buildInputFromMessages(messages []Message, systemPrompt string) string {
-	var input strings.Builder
+func convertMessagesToChat(messages []Message, systemPrompt string) []ChatMessage {
+	var chatMessages []ChatMessage
 	
-	// Add system prompt at the beginning
-	input.WriteString("System: ")
-	input.WriteString(systemPrompt)
-	input.WriteString("\n\n")
+	// Add system prompt as first message if not already present
+	if len(messages) == 0 || messages[0].Role != "system" {
+		chatMessages = append(chatMessages, ChatMessage{
+			Role:    "system",
+			Content: systemPrompt,
+		})
+	}
 	
-	// Convert messages to conversation format
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			input.WriteString("Human: ")
 			if str, ok := msg.Content.(string); ok {
-				input.WriteString(str)
-			} else if blocks, ok := msg.Content.([]ToolResult); ok {
-				// Handle tool results
-				for _, block := range blocks {
-					input.WriteString(fmt.Sprintf("Tool Result (%s): %s", block.ToolUseID, block.Content))
+				chatMessages = append(chatMessages, ChatMessage{
+					Role:    "user",
+					Content: str,
+				})
+			} else if toolResults, ok := msg.Content.([]ToolResult); ok {
+				// Handle tool results - for each tool result, create a tool message
+				for _, result := range toolResults {
+					chatMessages = append(chatMessages, ChatMessage{
+						Role:       "tool",
+						Content:    result.Content,
+						ToolCallID: result.ToolUseID,
+					})
 				}
 			}
 		case "assistant":
-			input.WriteString("Assistant: ")
+			chatMsg := ChatMessage{Role: "assistant"}
+			
 			if blocks, ok := msg.Content.([]ContentBlock); ok {
+				var textParts []string
+				var toolCalls []ToolCall
+				
 				for _, block := range blocks {
 					if block.Type == "text" {
-						input.WriteString(block.Text)
+						textParts = append(textParts, block.Text)
 					} else if block.Type == "tool_use" {
-						toolInputJSON, _ := json.Marshal(block.Input)
-						input.WriteString(fmt.Sprintf("\n[Tool Use: %s(%s)]", block.Name, string(toolInputJSON)))
+						argsJSON, _ := json.Marshal(block.Input)
+						toolCalls = append(toolCalls, ToolCall{
+							ID:   block.ID,
+							Type: "function",
+							Function: ToolCallFunction{
+								Name:      block.Name,
+								Arguments: string(argsJSON),
+							},
+						})
 					}
 				}
+				
+				if len(textParts) > 0 {
+					chatMsg.Content = strings.Join(textParts, "\n")
+				}
+				if len(toolCalls) > 0 {
+					chatMsg.ToolCalls = toolCalls
+				}
 			}
+			
+			chatMessages = append(chatMessages, chatMsg)
 		}
-		input.WriteString("\n\n")
 	}
 	
-	return input.String()
+	return chatMessages
+}
+
+func convertChoiceToContentBlocks(choice Choice) []ContentBlock {
+	var blocks []ContentBlock
+	
+	// Add text content if present
+	if choice.Message.Content != "" {
+		blocks = append(blocks, ContentBlock{
+			Type: "text",
+			Text: choice.Message.Content,
+		})
+	}
+	
+	// Convert tool calls to ContentBlocks
+	for _, toolCall := range choice.Message.ToolCalls {
+		// Parse the arguments JSON
+		var args map[string]interface{}
+		json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
+		
+		blocks = append(blocks, ContentBlock{
+			Type:  "tool_use",
+			ID:    toolCall.ID,
+			Name:  toolCall.Function.Name,
+			Input: args,
+		})
+	}
+	
+	return blocks
 }
 
 func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
@@ -795,7 +879,7 @@ func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
 	// Get API endpoint from environment variable, with default fallback
 	apiURL := os.Getenv("OPENAI_API_URL")
 	if apiURL == "" {
-		apiURL = "https://api.openai.com/v1/responses"
+		apiURL = "https://api.openai.com/v1/chat/completions"
 	}
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
@@ -835,41 +919,41 @@ func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
 	return &response, nil
 }
 
+func createToolSchema(name, description string, parameters InputSchema) ToolSchema {
+	return ToolSchema{
+		Type: "function",
+		Function: Function{
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		},
+	}
+}
+
 func runAgentLoop(initialPrompt string) error {
-	shellCommandSchema := ToolSchema{
-		Name:        "shellCommand",
-		Description: "Execute a shell command and return the result",
-		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"command": {
-					Type:        "string",
-					Description: "The shell command to execute",
-				},
+	shellCommandSchema := createToolSchema("shellCommand", "Execute a shell command and return the result", InputSchema{
+		Type: "object",
+		Properties: map[string]Property{
+			"command": {
+				Type:        "string",
+				Description: "The shell command to execute",
 			},
-			Required: []string{"command"},
 		},
-	}
+		Required: []string{"command"},
+	})
 
-	goDocSchema := ToolSchema{
-		Name:        "goDoc",
-		Description: "Execute go doc command to get documentation for Go packages, types, or functions",
-		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"packageOrSymbol": {
-					Type:        "string",
-					Description: "The package, type, or function to get documentation for (e.g., 'fmt', 'fmt.Println', 'net/http')",
-				},
+	goDocSchema := createToolSchema("goDoc", "Execute go doc command to get documentation for Go packages, types, or functions", InputSchema{
+		Type: "object",
+		Properties: map[string]Property{
+			"packageOrSymbol": {
+				Type:        "string",
+				Description: "The package, type, or function to get documentation for (e.g., 'fmt', 'fmt.Println', 'net/http')",
 			},
-			Required: []string{"packageOrSymbol"},
 		},
-	}
+		Required: []string{"packageOrSymbol"},
+	})
 
-	ripgrepSchema := ToolSchema{
-		Name:        "ripgrep",
-		Description: "Search for patterns in files using ripgrep (rg)",
-		InputSchema: InputSchema{
+	ripgrepSchema := createToolSchema("ripgrep", "Search for patterns in files using ripgrep (rg)", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"pattern": {
@@ -894,13 +978,9 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{"pattern"},
-		},
-	}
+	})
 
-	sedSchema := ToolSchema{
-		Name:        "sed",
-		Description: "Search and replace text in files using sed. ENFORCED: You must ALWAYS do a dry-run (dryRun=true) first to show diff before applying changes (dryRun=false). The system will reject apply operations without a prior dry-run.",
-		InputSchema: InputSchema{
+	sedSchema := createToolSchema("sed", "Search and replace text in files using sed. ENFORCED: You must ALWAYS do a dry-run (dryRun=true) first to show diff before applying changes (dryRun=false). The system will reject apply operations without a prior dry-run.", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"filePath": {
@@ -921,13 +1001,9 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{"filePath", "searchPattern", "replacePattern", "dryRun"},
-		},
-	}
+	})
 
-	todoSchema := ToolSchema{
-		Name:        "todo",
-		Description: "Manage todo.md files for planning and tracking multi-step changes",
-		InputSchema: InputSchema{
+	todoSchema := createToolSchema("todo", "Manage todo.md files for planning and tracking multi-step changes", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"action": {
@@ -944,13 +1020,9 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{"action"},
-		},
-	}
+	})
 
-	combySchema := ToolSchema{
-		Name:        "comby",
-		Description: "Advanced structural search and replace tool for code. Comby uses template-based matching with holes (:[name]) to match code structurally, understanding balanced delimiters, comments, and strings. Examples: 'fmt.Println(:[args])' matches function calls, 'if (:[condition]) { :[body] }' matches if statements. Supports regex in holes with :[name~regex] syntax. Can match-only or rewrite code in-place with diff preview.",
-		InputSchema: InputSchema{
+	combySchema := createToolSchema("comby", "Advanced structural search and replace tool for code. Comby uses template-based matching with holes (:[name]) to match code structurally, understanding balanced delimiters, comments, and strings. Examples: 'fmt.Println(:[args])' matches function calls, 'if (:[condition]) { :[body] }' matches if statements. Supports regex in holes with :[name~regex] syntax. Can match-only or rewrite code in-place with diff preview.", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"matchTemplate": {
@@ -987,13 +1059,9 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{"matchTemplate"},
-		},
-	}
+	})
 
-	gofmtSchema := ToolSchema{
-		Name:        "gofmt",
-		Description: "Format Go source code using 'go fmt'. IMPORTANT: Agent should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format files in-place.",
-		InputSchema: InputSchema{
+	gofmtSchema := createToolSchema("gofmt", "Format Go source code using 'go fmt'. IMPORTANT: Agent should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format files in-place.", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"target": {
@@ -1014,13 +1082,9 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{},
-		},
-	}
+	})
 
-	askSchema := ToolSchema{
-		Name:        "ask",
-		Description: "Ask the user for clarification or additional information when the agent needs input to proceed. Use this when requirements are unclear, multiple options exist, or user preferences are needed.",
-		InputSchema: InputSchema{
+	askSchema := createToolSchema("ask", "Ask the user for clarification or additional information when the agent needs input to proceed. Use this when requirements are unclear, multiple options exist, or user preferences are needed.", InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"question": {
@@ -1029,18 +1093,13 @@ func runAgentLoop(initialPrompt string) error {
 				},
 			},
 			Required: []string{"question"},
-		},
-	}
+	})
 
-	finishedSchema := ToolSchema{
-		Name:        "finished",
-		Description: "Call this tool when the task is complete to end the conversation",
-		InputSchema: InputSchema{
-			Type:       "object",
-			Properties: map[string]Property{},
-			Required:   []string{},
-		},
-	}
+	finishedSchema := createToolSchema("finished", "Call this tool when the task is complete to end the conversation", InputSchema{
+		Type:       "object",
+		Properties: map[string]Property{},
+		Required:   []string{},
+	})
 
 	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, combySchema, gofmtSchema, askSchema, finishedSchema}
 
@@ -1072,20 +1131,20 @@ func runAgentLoop(initialPrompt string) error {
 			model = defaultModel
 		}
 
-		// Convert messages to single input string
-		input := buildInputFromMessages(messages, systemPrompt)
+		// Convert internal messages to OpenAI chat format
+		chatMessages := convertMessagesToChat(messages, systemPrompt)
 
 		temp := temperature
 		topP := 1.0
 		maxOut := maxTokens
 		request := APIRequest{
-			Model:           model,
-			Input:           input,
-			MaxOutputTokens: &maxOut,
-			Temperature:     &temp,
-			TopP:            &topP,
-			Tools:           tools,
-			ToolChoice:      "auto",
+			Model:       model,
+			Messages:    chatMessages,
+			MaxTokens:   &maxOut,
+			Temperature: &temp,
+			TopP:        &topP,
+			Tools:       tools,
+			ToolChoice:  "auto",
 		}
 
 		response, err := callOpenAIAPI(request)
@@ -1093,19 +1152,20 @@ func runAgentLoop(initialPrompt string) error {
 			return fmt.Errorf("API call failed: %w", err)
 		}
 
-		// Extract content from OpenAI response format
-		var assistantContent []ContentBlock
-		if len(response.Output) > 0 {
-			assistantContent = response.Output[0].Content
+		// Extract content from OpenAI chat completions response format
+		var contentBlocks []ContentBlock
+		if len(response.Choices) > 0 {
+			contentBlocks = convertChoiceToContentBlocks(response.Choices[0])
 		}
+		
 		messages = append(messages, Message{
 			Role:    "assistant",
-			Content: assistantContent,
+			Content: contentBlocks,
 		})
 
 		hasToolUse := false
 
-		for _, block := range assistantContent {
+		for _, block := range contentBlocks {
 			if block.Type == "text" {
 				fmt.Printf("\n🤖 %s\n", block.Text)
 				continue
