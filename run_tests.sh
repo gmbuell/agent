@@ -38,6 +38,8 @@ if [ $? -eq 0 ]; then
     echo "- ripgrep: Fast file search with various options"
     echo "- sed: Safe file editing with mandatory dry-run"
     echo "- todo: Manage todo.md files for planning and tracking"
+    echo "- comby: Advanced structural code search and replace"
+    echo "- gofmt: Format Go source code with various options"
     echo
     echo "🛡️ Security features verified:"
     echo "- Sed dry-run enforcement prevents accidental modifications"

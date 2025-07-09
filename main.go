@@ -153,7 +153,7 @@ func executeRipgrep(pattern, path string, ignoreCase, lineNumbers, filesWithMatc
 	defer cancel()
 
 	args := []string{"rg"}
-	
+
 	if ignoreCase {
 		args = append(args, "-i")
 	}
@@ -163,9 +163,9 @@ func executeRipgrep(pattern, path string, ignoreCase, lineNumbers, filesWithMatc
 	if filesWithMatches {
 		args = append(args, "-l")
 	}
-	
+
 	args = append(args, pattern)
-	
+
 	if path != "" {
 		args = append(args, path)
 	}
@@ -203,6 +203,161 @@ func generateSedOperationKey(filePath, searchPattern, replacePattern string) str
 	return fmt.Sprintf("%x", hash)
 }
 
+func executeGofmt(target string, listFiles, diff, write bool, timeout time.Duration) ShellResult {
+	fmt.Printf("\n🔧 Formatting Go code: %s\n", target)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+
+	// For listing files or showing diff, we need to use gofmt directly
+	if listFiles || diff {
+		args := []string{"gofmt"}
+
+		if listFiles {
+			args = append(args, "-l")
+		}
+		if diff {
+			args = append(args, "-d")
+		}
+
+		// Add target (file, directory, or pattern)
+		if target != "" {
+			args = append(args, target)
+		} else {
+			// Default to current directory
+			args = append(args, "./...")
+		}
+
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+	} else {
+		// For formatting in place or just checking
+		// Handle wildcard patterns or directories by using gofmt instead of go fmt
+		if strings.Contains(target, "*") || write || strings.HasSuffix(target, "/") {
+			args := []string{"gofmt"}
+			if write {
+				args = append(args, "-w")
+			}
+
+			if target != "" {
+				args = append(args, target)
+			} else {
+				// Default to current directory
+				args = append(args, "./...")
+			}
+
+			cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+		} else {
+			// Use go fmt for package-based formatting
+			args := []string{"go", "fmt"}
+
+			// Add target (file, directory, or pattern)
+			if target != "" {
+				args = append(args, target)
+			} else {
+				// Default to current directory
+				args = append(args, "./...")
+			}
+
+			cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	result := ShellResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\n⏱️ Go fmt command timed out after %v\n", timeout)
+		}
+		result.ExitCode = 1
+		if result.Stderr == "" {
+			result.Stderr = err.Error()
+		}
+	}
+
+	return result
+}
+
+func executeComby(matchTemplate, rewriteTemplate, target string, matchOnly, inPlace, diff bool, language, rule string, timeout time.Duration) ShellResult {
+	fmt.Printf("\n🔀 Executing comby: %s\n", matchTemplate)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	args := []string{"comby"}
+
+	// Add match template
+	args = append(args, matchTemplate)
+
+	// Add rewrite template (empty for match-only)
+	if matchOnly {
+		args = append(args, "")
+		args = append(args, "-match-only")
+	} else {
+		args = append(args, rewriteTemplate)
+	}
+
+	// Add target (files, directories, or extensions)
+	if target != "" {
+		args = append(args, target)
+	}
+
+	// Add language/matcher if specified
+	if language != "" {
+		args = append(args, "-matcher", language)
+	}
+
+	// Add rule if specified
+	if rule != "" {
+		args = append(args, "-rule", rule)
+	}
+
+	// Add options
+	if inPlace {
+		args = append(args, "-in-place")
+	}
+	if diff {
+		args = append(args, "-diff")
+	}
+
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	result := ShellResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\n⏱️ Comby command timed out after %v\n", timeout)
+		}
+		result.ExitCode = 1
+		if result.Stderr == "" {
+			result.Stderr = err.Error()
+		}
+	}
+
+	return result
+}
+
 func executeTodo(action, filePath, content string, timeout time.Duration) ShellResult {
 	switch action {
 	case "read":
@@ -226,7 +381,7 @@ func executeTodo(action, filePath, content string, timeout time.Duration) ShellR
 
 func readTodoFile(filePath string) ShellResult {
 	fmt.Printf("\n📝 Reading todo file: %s\n", filePath)
-	
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -242,7 +397,7 @@ func readTodoFile(filePath string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	return ShellResult{
 		Stdout:   string(content),
 		Stderr:   "",
@@ -252,7 +407,7 @@ func readTodoFile(filePath string) ShellResult {
 
 func writeTodoFile(filePath, content string) ShellResult {
 	fmt.Printf("\n✏️ Writing todo file: %s\n", filePath)
-	
+
 	err := os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
 		return ShellResult{
@@ -261,7 +416,7 @@ func writeTodoFile(filePath, content string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	return ShellResult{
 		Stdout:   "Todo file written successfully",
 		Stderr:   "",
@@ -271,7 +426,7 @@ func writeTodoFile(filePath, content string) ShellResult {
 
 func addTodoItem(filePath, item string) ShellResult {
 	fmt.Printf("\n➕ Adding todo item to: %s\n", filePath)
-	
+
 	// Read existing content or create new file
 	var existingContent string
 	if content, err := os.ReadFile(filePath); err == nil {
@@ -283,19 +438,19 @@ func addTodoItem(filePath, item string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	// Add header if file is empty
 	if strings.TrimSpace(existingContent) == "" {
 		existingContent = "# Todo List\n\n"
 	}
-	
+
 	// Add new item
 	newContent := existingContent
 	if !strings.HasSuffix(existingContent, "\n") {
 		newContent += "\n"
 	}
 	newContent += fmt.Sprintf("- [ ] %s\n", item)
-	
+
 	err := os.WriteFile(filePath, []byte(newContent), 0644)
 	if err != nil {
 		return ShellResult{
@@ -304,7 +459,7 @@ func addTodoItem(filePath, item string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	return ShellResult{
 		Stdout:   "Todo item added successfully",
 		Stderr:   "",
@@ -314,7 +469,7 @@ func addTodoItem(filePath, item string) ShellResult {
 
 func completeTodoItem(filePath, item string) ShellResult {
 	fmt.Printf("\n✅ Completing todo item in: %s\n", filePath)
-	
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return ShellResult{
@@ -323,7 +478,7 @@ func completeTodoItem(filePath, item string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	// Find and mark item as complete
 	lines := strings.Split(string(content), "\n")
 	found := false
@@ -334,7 +489,7 @@ func completeTodoItem(filePath, item string) ShellResult {
 			break
 		}
 	}
-	
+
 	if !found {
 		return ShellResult{
 			Stdout:   "",
@@ -342,7 +497,7 @@ func completeTodoItem(filePath, item string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	newContent := strings.Join(lines, "\n")
 	err = os.WriteFile(filePath, []byte(newContent), 0644)
 	if err != nil {
@@ -352,7 +507,7 @@ func completeTodoItem(filePath, item string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	return ShellResult{
 		Stdout:   "Todo item completed successfully",
 		Stderr:   "",
@@ -362,7 +517,7 @@ func completeTodoItem(filePath, item string) ShellResult {
 
 func updateTodoItem(filePath, update string) ShellResult {
 	fmt.Printf("\n🔄 Updating todo item in: %s\n", filePath)
-	
+
 	// Parse update format: "old_item -> new_item"
 	parts := strings.Split(update, " -> ")
 	if len(parts) != 2 {
@@ -372,10 +527,10 @@ func updateTodoItem(filePath, update string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	oldItem := strings.TrimSpace(parts[0])
 	newItem := strings.TrimSpace(parts[1])
-	
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return ShellResult{
@@ -384,14 +539,14 @@ func updateTodoItem(filePath, update string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	// Find and update item
 	lines := strings.Split(string(content), "\n")
 	found := false
 	for i, line := range lines {
 		if strings.Contains(line, oldItem) && (strings.Contains(line, "- [ ]") || strings.Contains(line, "- [x]")) {
 			// Preserve the checkbox state
-		if strings.Contains(line, "- [ ]") {
+			if strings.Contains(line, "- [ ]") {
 				lines[i] = fmt.Sprintf("- [ ] %s", newItem)
 			} else {
 				lines[i] = fmt.Sprintf("- [x] %s", newItem)
@@ -400,7 +555,7 @@ func updateTodoItem(filePath, update string) ShellResult {
 			break
 		}
 	}
-	
+
 	if !found {
 		return ShellResult{
 			Stdout:   "",
@@ -408,7 +563,7 @@ func updateTodoItem(filePath, update string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	newContent := strings.Join(lines, "\n")
 	err = os.WriteFile(filePath, []byte(newContent), 0644)
 	if err != nil {
@@ -418,7 +573,7 @@ func updateTodoItem(filePath, update string) ShellResult {
 			ExitCode: 1,
 		}
 	}
-	
+
 	return ShellResult{
 		Stdout:   "Todo item updated successfully",
 		Stderr:   "",
@@ -428,7 +583,7 @@ func updateTodoItem(filePath, update string) ShellResult {
 
 func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, timeout time.Duration) ShellResult {
 	operationKey := generateSedOperationKey(filePath, searchPattern, replacePattern)
-	
+
 	if dryRun {
 		fmt.Printf("\n🔍 Sed dry-run on %s: s/%s/%s/g\n", filePath, searchPattern, replacePattern)
 	} else {
@@ -458,7 +613,7 @@ func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, tim
 		}
 		// Create a temporary file for the modified content and show diff
 		tempFile := filePath + ".tmp"
-		sedCmd := fmt.Sprintf("sed 's/%s/%s/g' '%s' > '%s' && diff -u '%s' '%s'; rm -f '%s'", 
+		sedCmd := fmt.Sprintf("sed 's/%s/%s/g' '%s' > '%s' && diff -u '%s' '%s'; rm -f '%s'",
 			searchPattern, replacePattern, filePath, tempFile, filePath, tempFile, tempFile)
 		cmd = exec.CommandContext(ctx, "sh", "-c", sedCmd)
 	} else {
@@ -655,6 +810,76 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
+	combySchema := ToolSchema{
+		Name:        "comby",
+		Description: "Advanced structural search and replace tool for code. Comby uses template-based matching with holes (:[name]) to match code structurally, understanding balanced delimiters, comments, and strings. Examples: 'fmt.Println(:[args])' matches function calls, 'if (:[condition]) { :[body] }' matches if statements. Supports regex in holes with :[name~regex] syntax. Can match-only or rewrite code in-place with diff preview.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"matchTemplate": {
+					Type:        "string",
+					Description: "Template to match code structure using holes like :[name]. Example: 'fmt.Println(:[args])' or 'if (:[condition]) { :[body] }'",
+				},
+				"rewriteTemplate": {
+					Type:        "string",
+					Description: "Template to rewrite matched code. Use same hole names as match template. Example: 'log.Printf(\"msg: %s\", :[args])'",
+				},
+				"target": {
+					Type:        "string",
+					Description: "Target files/directories/extensions to search. Examples: '.go', 'src/', 'main.go', '.js,.ts'",
+				},
+				"matchOnly": {
+					Type:        "boolean",
+					Description: "Only find matches without rewriting (default: false)",
+				},
+				"inPlace": {
+					Type:        "boolean",
+					Description: "Rewrite files in place (default: false)",
+				},
+				"diff": {
+					Type:        "boolean",
+					Description: "Show diff of changes (default: false)",
+				},
+				"language": {
+					Type:        "string",
+					Description: "Force language/matcher: .go, .js, .py, .java, .c, .generic, etc.",
+				},
+				"rule": {
+					Type:        "string",
+					Description: "Apply rules to matches (advanced). Example: 'where match.var == \"foo\"'",
+				},
+			},
+			Required: []string{"matchTemplate"},
+		},
+	}
+
+	gofmtSchema := ToolSchema{
+		Name:        "gofmt",
+		Description: "Format Go source code using 'go fmt'. IMPORTANT: Agent should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format files in-place.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"target": {
+					Type:        "string",
+					Description: "Target to format: file path, directory, or pattern (default: './...' for all Go files)",
+				},
+				"listFiles": {
+					Type:        "boolean",
+					Description: "List files that would be formatted without formatting them (default: false)",
+				},
+				"diff": {
+					Type:        "boolean",
+					Description: "Show diff of formatting changes without applying them (default: false)",
+				},
+				"write": {
+					Type:        "boolean",
+					Description: "Write formatted code back to files in-place (default: false)",
+				},
+			},
+			Required: []string{},
+		},
+	}
+
 	finishedSchema := ToolSchema{
 		Name:        "finished",
 		Description: "Call this tool when the task is complete to end the conversation",
@@ -665,15 +890,17 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
-	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, finishedSchema}
+	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, combySchema, gofmtSchema, finishedSchema}
 
-	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, edit text files, and manage todo lists to accomplish tasks.\n" +
+	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, edit text files, perform structural code search/replace, format Go code, and manage todo lists to accomplish tasks.\n" +
 		"Use the provided tools to complete the user's task:\n" +
 		"- shellCommand: Execute any shell command\n" +
 		"- goDoc: Get documentation for Go packages, types, or functions\n" +
 		"- ripgrep: Search for patterns in files using ripgrep (fast file search)\n" +
 		"- sed: Search and replace text in files. MANDATORY: You MUST do dry-run (dryRun=true) first, then apply (dryRun=false). System enforces this workflow.\n" +
 		"- todo: Manage todo.md files for planning multi-step changes (actions: read, write, add, complete, update)\n" +
+		"- comby: Advanced structural search and replace for code using templates with holes (:[name]). Understands language syntax, balanced delimiters, comments, strings. Use for complex code transformations.\n" +
+		"- gofmt: Format Go source code. IMPORTANT: You should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format in-place.\n" +
 		"When the task is complete, call the finished tool to indicate completion."
 
 	messages := []Message{
@@ -754,7 +981,7 @@ func runAgentLoop(initialPrompt string) error {
 						ignoreCase, _ := block.Input["ignoreCase"].(bool)
 						lineNumbers, _ := block.Input["lineNumbers"].(bool)
 						filesWithMatches, _ := block.Input["filesWithMatches"].(bool)
-						
+
 						result := executeRipgrep(pattern, path, ignoreCase, lineNumbers, filesWithMatches, 10*time.Second)
 						resultJSON, _ := json.Marshal(result)
 
@@ -774,7 +1001,7 @@ func runAgentLoop(initialPrompt string) error {
 						if searchPattern, ok := block.Input["searchPattern"].(string); ok {
 							if replacePattern, ok := block.Input["replacePattern"].(string); ok {
 								dryRun, _ := block.Input["dryRun"].(bool)
-								
+
 								result := executeSed(filePath, searchPattern, replacePattern, dryRun, 10*time.Second)
 								resultJSON, _ := json.Marshal(result)
 
@@ -798,7 +1025,7 @@ func runAgentLoop(initialPrompt string) error {
 							filePath = "todo.md"
 						}
 						content, _ := block.Input["content"].(string)
-						
+
 						result := executeTodo(action, filePath, content, 10*time.Second)
 						resultJSON, _ := json.Marshal(result)
 
@@ -813,6 +1040,49 @@ func runAgentLoop(initialPrompt string) error {
 							},
 						})
 					}
+				case "comby":
+					if matchTemplate, ok := block.Input["matchTemplate"].(string); ok {
+						rewriteTemplate, _ := block.Input["rewriteTemplate"].(string)
+						target, _ := block.Input["target"].(string)
+						matchOnly, _ := block.Input["matchOnly"].(bool)
+						inPlace, _ := block.Input["inPlace"].(bool)
+						diff, _ := block.Input["diff"].(bool)
+						language, _ := block.Input["language"].(string)
+						rule, _ := block.Input["rule"].(string)
+
+						result := executeComby(matchTemplate, rewriteTemplate, target, matchOnly, inPlace, diff, language, rule, 10*time.Second)
+						resultJSON, _ := json.Marshal(result)
+
+						messages = append(messages, Message{
+							Role: "user",
+							Content: []ToolResult{
+								{
+									Type:      "tool_result",
+									ToolUseID: block.ID,
+									Content:   string(resultJSON),
+								},
+							},
+						})
+					}
+				case "gofmt":
+					target, _ := block.Input["target"].(string)
+					listFiles, _ := block.Input["listFiles"].(bool)
+					diff, _ := block.Input["diff"].(bool)
+					write, _ := block.Input["write"].(bool)
+
+					result := executeGofmt(target, listFiles, diff, write, 10*time.Second)
+					resultJSON, _ := json.Marshal(result)
+
+					messages = append(messages, Message{
+						Role: "user",
+						Content: []ToolResult{
+							{
+								Type:      "tool_result",
+								ToolUseID: block.ID,
+								Content:   string(resultJSON),
+							},
+						},
+					})
 				case "finished":
 					fmt.Println("\n✅ Task completed!")
 					return nil
