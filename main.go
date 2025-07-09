@@ -59,17 +59,38 @@ type ToolResult struct {
 }
 
 type APIRequest struct {
-	Model          string       `json:"model"`
-	MaxTokens      int          `json:"max_tokens"`
-	MaxInputTokens int          `json:"max_input_tokens"`
-	Messages       []Message    `json:"messages"`
-	System         string       `json:"system"`
-	Tools          []ToolSchema `json:"tools"`
-	Temperature    float64      `json:"temperature"`
+	Model       string       `json:"model"`
+	Input       string       `json:"input"`
+	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
+	Temperature *float64     `json:"temperature,omitempty"`
+	TopP        *float64     `json:"top_p,omitempty"`
+	Tools       []ToolSchema `json:"tools,omitempty"`
+	ToolChoice  string       `json:"tool_choice,omitempty"`
 }
 
 type APIResponse struct {
+	ID                string       `json:"id"`
+	Object            string       `json:"object"`
+	CreatedAt         int64        `json:"created_at"`
+	Status            string       `json:"status"`
+	Error             interface{}  `json:"error"`
+	Model             string       `json:"model"`
+	Output            []OutputMessage `json:"output"`
+	Usage             Usage        `json:"usage"`
+}
+
+type OutputMessage struct {
+	Type    string         `json:"type"`
+	ID      string         `json:"id"`
+	Status  string         `json:"status"`
+	Role    string         `json:"role"`
 	Content []ContentBlock `json:"content"`
+}
+
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 type ShellResult struct {
@@ -725,16 +746,56 @@ func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, tim
 	return result
 }
 
-func callAnthropicAPI(request APIRequest) (*APIResponse, error) {
+func buildInputFromMessages(messages []Message, systemPrompt string) string {
+	var input strings.Builder
+	
+	// Add system prompt at the beginning
+	input.WriteString("System: ")
+	input.WriteString(systemPrompt)
+	input.WriteString("\n\n")
+	
+	// Convert messages to conversation format
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			input.WriteString("Human: ")
+			if str, ok := msg.Content.(string); ok {
+				input.WriteString(str)
+			} else if blocks, ok := msg.Content.([]ToolResult); ok {
+				// Handle tool results
+				for _, block := range blocks {
+					input.WriteString(fmt.Sprintf("Tool Result (%s): %s", block.ToolUseID, block.Content))
+				}
+			}
+		case "assistant":
+			input.WriteString("Assistant: ")
+			if blocks, ok := msg.Content.([]ContentBlock); ok {
+				for _, block := range blocks {
+					if block.Type == "text" {
+						input.WriteString(block.Text)
+					} else if block.Type == "tool_use" {
+						toolInputJSON, _ := json.Marshal(block.Input)
+						input.WriteString(fmt.Sprintf("\n[Tool Use: %s(%s)]", block.Name, string(toolInputJSON)))
+					}
+				}
+			}
+		}
+		input.WriteString("\n\n")
+	}
+	
+	return input.String()
+}
+
+func callOpenAIAPI(request APIRequest) (*APIResponse, error) {
 	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// Get API endpoint from environment variable, with default fallback
-	apiURL := os.Getenv("ANTHROPIC_API_URL")
+	apiURL := os.Getenv("OPENAI_API_URL")
 	if apiURL == "" {
-		apiURL = "https://api.anthropic.com/v1/messages"
+		apiURL = "https://api.openai.com/v1/responses"
 	}
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
@@ -742,14 +803,13 @@ func callAnthropicAPI(request APIRequest) (*APIResponse, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable is required")
+		return nil, fmt.Errorf("OPENAI_API_KEY environment variable is required")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -1007,34 +1067,45 @@ func runAgentLoop(initialPrompt string) error {
 		fmt.Println("\n🤔 Thinking...")
 
 		// Get model from environment variable, with default fallback
-		model := os.Getenv("ANTHROPIC_MODEL")
+		model := os.Getenv("OPENAI_MODEL")
 		if model == "" {
 			model = defaultModel
 		}
 
+		// Convert messages to single input string
+		input := buildInputFromMessages(messages, systemPrompt)
+
+		temp := temperature
+		topP := 1.0
+		maxOut := maxTokens
 		request := APIRequest{
-			Model:          model,
-			MaxTokens:      maxTokens,
-			MaxInputTokens: maxInputTokens,
-			Messages:       messages,
-			System:         systemPrompt,
-			Tools:          tools,
-			Temperature:    temperature,
+			Model:           model,
+			Input:           input,
+			MaxOutputTokens: &maxOut,
+			Temperature:     &temp,
+			TopP:            &topP,
+			Tools:           tools,
+			ToolChoice:      "auto",
 		}
 
-		response, err := callAnthropicAPI(request)
+		response, err := callOpenAIAPI(request)
 		if err != nil {
 			return fmt.Errorf("API call failed: %w", err)
 		}
 
+		// Extract content from OpenAI response format
+		var assistantContent []ContentBlock
+		if len(response.Output) > 0 {
+			assistantContent = response.Output[0].Content
+		}
 		messages = append(messages, Message{
 			Role:    "assistant",
-			Content: response.Content,
+			Content: assistantContent,
 		})
 
 		hasToolUse := false
 
-		for _, block := range response.Content {
+		for _, block := range assistantContent {
 			if block.Type == "text" {
 				fmt.Printf("\n🤖 %s\n", block.Text)
 				continue
