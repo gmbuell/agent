@@ -289,6 +289,20 @@ func executeGofmt(target string, listFiles, diff, write bool, timeout time.Durat
 	return result
 }
 
+func executeAsk(question string) ShellResult {
+	fmt.Printf("\n❓ Agent is asking for clarification:\n%s\n", question)
+	fmt.Print("👤 Your response: ")
+
+	var response string
+	fmt.Scanln(&response)
+
+	return ShellResult{
+		Stdout:   response,
+		Stderr:   "",
+		ExitCode: 0,
+	}
+}
+
 func executeComby(matchTemplate, rewriteTemplate, target string, matchOnly, inPlace, diff bool, language, rule string, timeout time.Duration) ShellResult {
 	fmt.Printf("\n🔀 Executing comby: %s\n", matchTemplate)
 
@@ -880,6 +894,21 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
+	askSchema := ToolSchema{
+		Name:        "ask",
+		Description: "Ask the user for clarification or additional information when the agent needs input to proceed. Use this when requirements are unclear, multiple options exist, or user preferences are needed.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"question": {
+					Type:        "string",
+					Description: "The question or clarification request to present to the user. Be specific and clear about what information you need.",
+				},
+			},
+			Required: []string{"question"},
+		},
+	}
+
 	finishedSchema := ToolSchema{
 		Name:        "finished",
 		Description: "Call this tool when the task is complete to end the conversation",
@@ -890,9 +919,9 @@ func runAgentLoop(initialPrompt string) error {
 		},
 	}
 
-	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, combySchema, gofmtSchema, finishedSchema}
+	tools := []ToolSchema{shellCommandSchema, goDocSchema, ripgrepSchema, sedSchema, todoSchema, combySchema, gofmtSchema, askSchema, finishedSchema}
 
-	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, edit text files, perform structural code search/replace, format Go code, and manage todo lists to accomplish tasks.\n" +
+	systemPrompt := "You are an AI agent that can run shell commands, access Go documentation, search files, edit text files, perform structural code search/replace, format Go code, ask for user clarification, and manage todo lists to accomplish tasks.\n" +
 		"Use the provided tools to complete the user's task:\n" +
 		"- shellCommand: Execute any shell command\n" +
 		"- goDoc: Get documentation for Go packages, types, or functions\n" +
@@ -901,6 +930,7 @@ func runAgentLoop(initialPrompt string) error {
 		"- todo: Manage todo.md files for planning multi-step changes (actions: read, write, add, complete, update)\n" +
 		"- comby: Advanced structural search and replace for code using templates with holes (:[name]). Understands language syntax, balanced delimiters, comments, strings. Use for complex code transformations.\n" +
 		"- gofmt: Format Go source code. IMPORTANT: You should run this regularly after creating or modifying Go files to maintain proper formatting. Use write=true to format in-place.\n" +
+		"- ask: Ask the user for clarification when requirements are unclear, multiple options exist, or user preferences are needed. Use this to get specific guidance before proceeding.\n" +
 		"When the task is complete, call the finished tool to indicate completion."
 
 	messages := []Message{
@@ -1083,6 +1113,22 @@ func runAgentLoop(initialPrompt string) error {
 							},
 						},
 					})
+				case "ask":
+					if question, ok := block.Input["question"].(string); ok {
+						result := executeAsk(question)
+						resultJSON, _ := json.Marshal(result)
+
+						messages = append(messages, Message{
+							Role: "user",
+							Content: []ToolResult{
+								{
+									Type:      "tool_result",
+									ToolUseID: block.ID,
+									Content:   string(resultJSON),
+								},
+							},
+						})
+					}
 				case "finished":
 					fmt.Println("\n✅ Task completed!")
 					return nil
