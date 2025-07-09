@@ -225,6 +225,14 @@ func executeSed(filePath, searchPattern, replacePattern string, dryRun bool, tim
 
 	var cmd *exec.Cmd
 	if dryRun {
+		// First check if file exists
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			return ShellResult{
+				Stdout:   "",
+				Stderr:   fmt.Sprintf("sed: %s: No such file or directory", filePath),
+				ExitCode: 1,
+			}
+		}
 		// Create a temporary file for the modified content and show diff
 		tempFile := filePath + ".tmp"
 		sedCmd := fmt.Sprintf("sed 's/%s/%s/g' '%s' > '%s' && diff -u '%s' '%s'; rm -f '%s'", 
