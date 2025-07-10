@@ -71,6 +71,7 @@ func main() {
 		}
 
 		agent.conversationMsgs = []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("You are a helpful assistant that MUST use tools to complete tasks. You have access to 'bash' tool for executing commands and 'finish' tool when the task is complete. You MUST call one of these tools in every response - never respond without using a tool."),
 			openai.UserMessage(instruction),
 		}
 
@@ -131,6 +132,11 @@ func (a *AgentState) runAgentLoop() {
 
 		if len(choice.Message.ToolCalls) == 0 {
 			fmt.Printf("Agent: %s\n", choice.Message.Content)
+			
+			// Force the agent to use tools by adding a reminder message
+			a.conversationMsgs = append(a.conversationMsgs, openai.UserMessage(
+				"You must use either the 'bash' tool to execute commands or the 'finish' tool to complete the task. Please call one of the available tools.",
+			))
 			continue
 		}
 
