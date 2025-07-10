@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -31,7 +33,7 @@ func main() {
 	}
 
 	baseURL := os.Getenv("OPENAI_BASE_URL")
-	
+
 	var client *openai.Client
 	if baseURL != "" {
 		c := openai.NewClient(
@@ -45,7 +47,7 @@ func main() {
 		)
 		client = &c
 	}
-	
+
 	agent := &AgentState{
 		client:          client,
 		allowedCommands: make(map[string]bool),
@@ -113,9 +115,9 @@ func (a *AgentState) runAgentLoop() {
 			},
 		}
 
-		resp, err := a.client.Chat.Completions.New(context.Background(), params)
+		resp, err := a.callWithRetry(params)
 		if err != nil {
-			log.Printf("Error calling OpenAI API: %v", err)
+			log.Printf("Error calling OpenAI API after retries: %v", err)
 			return
 		}
 
@@ -199,4 +201,37 @@ func (a *AgentState) handleBashCommand(command string) string {
 	}
 
 	return string(output)
+}
+
+func (a *AgentState) callWithRetry(params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	maxRetries := 10
+	baseDelay := time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := a.client.Chat.Completions.New(context.Background(), params)
+
+		if err == nil {
+			return resp, nil
+		}
+
+		// Check if it's a 500 error that we should retry
+		if shouldRetry(err) && attempt < maxRetries {
+			delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt)))
+			log.Printf("API call failed (attempt %d/%d): %v. Retrying in %v...", attempt+1, maxRetries+1, err, delay)
+			time.Sleep(delay)
+			continue
+		}
+
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("exceeded maximum retries")
+}
+
+func shouldRetry(err error) bool {
+	// Check if it's an HTTP 500 error
+	if httpErr, ok := err.(*openai.Error); ok {
+		return httpErr.StatusCode >= 500 && httpErr.StatusCode < 600
+	}
+	return false
 }
