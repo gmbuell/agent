@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -53,20 +53,32 @@ func main() {
 		allowedCommands: make(map[string]bool),
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-
 	for {
-		fmt.Print("Enter your instruction (or 'quit' to exit): ")
-		if !scanner.Scan() {
+		var instruction string
+		var shouldQuit bool
+
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Enter your instruction").
+					Placeholder("What would you like me to do?").
+					Value(&instruction),
+				huh.NewConfirm().
+					Title("Do you want to quit?").
+					Value(&shouldQuit),
+			),
+		).Run()
+
+		if err != nil {
+			log.Printf("Error with form: %v", err)
 			break
 		}
 
-		instruction := strings.TrimSpace(scanner.Text())
-		if instruction == "quit" {
+		if shouldQuit {
 			break
 		}
 
-		if instruction == "" {
+		if strings.TrimSpace(instruction) == "" {
 			continue
 		}
 
@@ -168,33 +180,45 @@ func (a *AgentState) handleBashCommand(command string) string {
 
 	if !a.allowedCommands[baseCommand] {
 		fmt.Printf("Agent wants to execute: %s\n", command)
-		fmt.Printf("Allow this command? (y)es, (n)o, (a)lways allow '%s', (i)nstruct: ", baseCommand)
-
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() {
-			return "Permission denied - no input received"
+		
+		var choice string
+		err := huh.NewSelect[string]().
+			Title("Allow this command?").
+			Options(
+				huh.NewOption("Yes (allow once)", "yes"),
+				huh.NewOption("No (deny)", "no"),
+				huh.NewOption(fmt.Sprintf("Always allow '%s'", baseCommand), "always"),
+				huh.NewOption("Provide alternative instructions", "instruct"),
+			).
+			Value(&choice).
+			Run()
+		
+		if err != nil {
+			return "Permission denied - selection error"
 		}
-
-		response := strings.ToLower(strings.TrimSpace(scanner.Text()))
-
-		switch response {
-		case "y", "yes":
+		
+		switch choice {
+		case "yes":
 			// Allow this one time
-		case "n", "no":
+		case "no":
 			return "Permission denied by user"
-		case "a", "always":
+		case "always":
 			a.allowedCommands[baseCommand] = true
 			fmt.Printf("Command '%s' will always be allowed\n", baseCommand)
-		case "i", "instruct":
-			fmt.Print("Enter alternative instructions for the agent: ")
-			if scanner.Scan() {
-				instruction := strings.TrimSpace(scanner.Text())
-				if instruction != "" {
-					a.conversationMsgs = append(a.conversationMsgs, openai.UserMessage(instruction))
-					return "User provided alternative instructions"
-				}
+		case "instruct":
+			var instruction string
+			err := huh.NewInput().
+				Title("Enter alternative instructions for the agent").
+				Placeholder("What should the agent do instead?").
+				Value(&instruction).
+				Run()
+			
+			if err != nil || strings.TrimSpace(instruction) == "" {
+				return "Permission denied - no alternative instructions provided"
 			}
-			return "Permission denied - no alternative instructions provided"
+			
+			a.conversationMsgs = append(a.conversationMsgs, openai.UserMessage(instruction))
+			return "User provided alternative instructions"
 		default:
 			return "Permission denied - invalid response"
 		}
